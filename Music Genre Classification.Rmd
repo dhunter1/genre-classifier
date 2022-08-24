@@ -1,0 +1,495 @@
+---
+title: <center>Music Genre Classification</center>
+subtitle: <center>CSC570AH Final Project</center>
+author: <center>Devon Hunter</center>
+output: html_notebook
+---
+
+<!-- NOTE: the code in this notebook takes over an hour to run -->
+<!-- SpotifyFeatures.csv should be in the same directory as this file -->
+
+The goal of this project is to identify music genres using aural attributes of songs. The data has been provided and classified by Spotify. The dataset and attribute descriptions can be found using the links below:
+
+* [Spotify Features Dataset](https://www.kaggle.com/zaheenhamidani/ultimate-spotify-tracks-db/version/2)
+
+* [Spotify Features Description](https://developer.spotify.com/documentation/web-api/reference/tracks/get-audio-features/)
+
+The original dataset used UTF-8-BOM encoding, which is not agreeable with knitr. The copy of the dataset included with this project was saved using standard UTF-8 encoding in Notepad++. No data was lost or altered.
+```{r}
+music.dataset <- read.csv("SpotifyFeatures.csv")
+options(scipen = 5)
+```
+&nbsp;
+
+## 1. Exploratory Data Analysis and Preparation
+The structure and summary of the dataset are shown below. We have 7 categorical variables and 11 numerical variables. There are 228,159 observations and no missing values:
+```{r}
+str(music.dataset)
+summary(music.dataset)
+```
+&nbsp;
+
+Artist name, track name, and track id are removed because they are not relevant to music genre. Popularity might be useful, but it isn't an aural attribute so it is also removed:
+```{r}
+music.dataset <- music.dataset[-c(2, 3, 4, 5)]
+str(music.dataset)
+```
+&nbsp;
+
+This project is not intended to be a comprehensive music genre classifier. The goal is to classify popular music genres; some of the more obscure genres are excluded:
+```{r}
+music.dataset <- music.dataset[music.dataset$genre != "A Capella", ]
+music.dataset <- music.dataset[music.dataset$genre != "Anime", ]
+music.dataset <- music.dataset[music.dataset$genre != "Childrenâ€™s Music", ]
+music.dataset <- music.dataset[music.dataset$genre != "Comedy", ]
+music.dataset <- music.dataset[music.dataset$genre != "Soundtrack", ]
+music.dataset <- music.dataset[music.dataset$genre != "Movie", ]
+music.dataset <- music.dataset[music.dataset$genre != "Opera", ]
+music.dataset <- music.dataset[music.dataset$genre != "Reggaeton", ]
+music.dataset <- music.dataset[music.dataset$genre != "World", ]
+```
+&nbsp;
+
+We'll also remove subgenres to improve classification accuracy (e.g. R&B can be removed because it is a subgenre of blues):
+```{r}
+music.dataset <- music.dataset[music.dataset$genre != "R&B", ]
+music.dataset <- music.dataset[music.dataset$genre != "Alternative", ]
+music.dataset <- music.dataset[music.dataset$genre != "Indie", ]
+music.dataset <- music.dataset[music.dataset$genre != "Ska", ]
+music.dataset <- music.dataset[music.dataset$genre != "Dance", ]
+music.dataset <- music.dataset[music.dataset$genre != "Soul", ]
+music.dataset <- music.dataset[music.dataset$genre != "Rap", ]
+music.dataset <- music.dataset[music.dataset$genre != "Reggae", ]
+
+music.dataset <- droplevels(music.dataset)
+```
+&nbsp;
+
+The number of observations for each genre can be visualized using a barplot:
+```{r}
+barplot(table(music.dataset$genre), col = "palegreen4")
+```
+&nbsp;
+
+The dataset is downsampled for two reasons: first, we can make sure the classes are perfectly balanced. Second, we want to be able to train the classifiers in a reasonable amount of time. We can always adjust the sample rate in this section if the models show signs of overfitting.  
+
+The caret and dplyr packages are used to accomplish this. Caret's downsample() function ensures the classes are evenly balanced and dplyr's sample_frac() function samples 20% of each class. After downsampling we have 15,597 total observations, or 1,733 observations per class:
+```{r}
+library(ggplot2)
+library(lattice)
+library(caret)
+library(dplyr, warn.conflicts = FALSE)
+
+set.seed(1)
+
+#Note: the class variable is moved to the last column
+music.dataset <- downSample(music.dataset[ , -1], 
+                            music.dataset$genre,
+                            list = FALSE,
+                            yname = "genre")
+
+set.seed(1)
+music.dataset <- music.dataset %>% group_by(genre) %>% sample_frac(.2)
+music.dataset <- as.data.frame(ungroup(music.dataset))
+
+#We might lose some uncommon values (namely, instances where the time signature is 0/4),
+#The factor levels are adjusted here to account for that
+music.dataset <- droplevels(music.dataset)
+
+barplot(table(music.dataset$genre), col = "palegreen4")
+```
+&nbsp;
+
+The relationships between the class variable and song attributes are explored here. First, nominal variable relationships are explored using heatmaps and chi-square tests:
+```{r}
+attach(music.dataset, warn.conflicts = FALSE)
+
+key.table <- table(key, genre)
+mode.table <- table(mode, genre)
+timesig.table <- table(time_signature, genre)
+
+key.df <- as.data.frame(key.table)
+mode.df <- as.data.frame(mode.table)
+time.df <- as.data.frame(timesig.table)
+
+ggplot(key.df, aes(key, genre)) + geom_tile(aes(fill = Freq), colour = "black") + scale_fill_gradient(low = "white", high = "skyblue4")
+
+chisq.test(key.table)
+
+ggplot(mode.df, aes(mode, genre)) + geom_tile(aes(fill = Freq), colour = "black") + scale_fill_gradient(low = "white", high = "skyblue4")
+
+chisq.test(mode.table)
+
+ggplot(time.df, aes(time_signature, genre)) + geom_tile(aes(fill = Freq), colour = "black") + scale_fill_gradient(low = "white", high = "skyblue4")
+
+chisq.test(timesig.table)
+```
+&nbsp;
+
+Based on the heatmaps, it looks like certain genres tend to prefer certain keys. Most genres use major modes and 4/4 time, but some make use of minor modes and odd time signatures.  
+
+The chi-square test results show very small p-values indicating a relationship between the class variable and key, mode, and time signature.  
+
+Next, the numeric attributes are explored using side-by-side boxplots and ANOVA tests.
+```{r}
+plot(acousticness~genre, col="darkorange")
+oneway.test(acousticness~genre, data = music.dataset)
+
+plot(danceability~genre, col="darkorange")
+oneway.test(danceability~genre, data = music.dataset)
+
+plot(duration_ms~genre, col="darkorange")
+oneway.test(duration_ms~genre, data = music.dataset)
+
+plot(energy~genre, col="darkorange")
+oneway.test(energy~genre, data = music.dataset)
+
+plot(instrumentalness~genre, col="darkorange")
+oneway.test(instrumentalness~genre, data = music.dataset)
+
+plot(liveness~genre, col="darkorange")
+oneway.test(liveness~genre, data = music.dataset)
+
+plot(loudness~genre, col="darkorange")
+oneway.test(loudness~genre, data = music.dataset)
+
+plot(speechiness~genre, col="darkorange")
+oneway.test(speechiness~genre, data = music.dataset)
+
+plot(tempo~genre, col="darkorange")
+oneway.test(tempo~genre, data = music.dataset)
+
+plot(valence~genre, col="darkorange")
+oneway.test(valence~genre, data = music.dataset)
+```
+&nbsp;
+
+The box plots show a noticeable difference between the means of each attribute for each music genre. According to the ANOVA test results, all the numeric variables are significant.  
+
+Additional data preparation (i.e. normalization, encoding, etc.) will be performed as required for each machine learning algorithm. Before experimenting with models, the row order is randomized and the data is partitioned into train and test sets using the caret package. We'll use 90% of the data for training and 10% for testing:
+```{r}
+music.dataset <- music.dataset[sample(nrow(music.dataset), replace = FALSE), ]
+
+attach(music.dataset, warn.conflicts = FALSE)
+
+set.seed(1)
+
+train.index <- createDataPartition(genre, p = 0.9, list = FALSE)
+music.train <- music.dataset[train.index, ]
+music.test <- music.dataset[-train.index, ]
+```
+&nbsp;
+
+## Classifying Music Genre using Machine Learning Models
+The following models are trained and tested in this section:
+
+* KNN
+* SVM
+* Random Forest
+* Gradient Boosted Trees
+* Neural Network with TensorFlow Backend
+
+Models with hyper-parameters (except the neural network) are auto-tuned using cross-validation with the caret package. The neural network is tuned manually.  
+
+The performance of the classifiers is evaluated in the next section. The accuracy and AUC of each classifier is stored and presented in a table. The pROC library is used to calculate AUC because ROCR doesn't support multi-class classification.
+
+#### Classification Using KNN
+Before running the KNN algorithm, the categorical variables (except genre) in the train and test sets are converted to numeric. The results are stored as music.train.num and music.test.num so we can reuse them for other classifiers that require numeric variables:
+```{r}
+music.train.num <- music.train
+music.test.num <- music.test
+
+factor.cols <- c("key", "mode", "time_signature")
+music.train.num[factor.cols] <- lapply(music.train.num[factor.cols], as.numeric)
+music.test.num[factor.cols] <- lapply(music.test.num[factor.cols], as.numeric)
+
+music.train.num[, "mode"] <- ifelse(music.train.num$mode == 2, 1, 0)
+music.test.num[, "mode"] <- ifelse(music.test.num$mode == 2, 1, 0)
+```
+&nbsp;
+
+Next, the variables are scaled. Acousticness, danceability, energy, instrumentalness liveness, speechiness, and valence are not scaled because their values are already between 0 and 1. We'll use min-max normalization so the ranges of the variables are consistent: 
+```{r}
+normalize <- function(x) {
+  return ((x - min(x)) / (max(x) - min(x)))
+}
+
+scale.cols <- c(3, 6, 8, 11, 12)
+
+music.train.num[scale.cols] <- lapply(music.train.num[scale.cols], normalize)
+music.test.num[scale.cols] <- lapply(music.test.num[scale.cols], normalize)
+
+str(music.train.num)
+str(music.test.num)
+```
+&nbsp;
+
+With the preprocessing complete we can fit the KNN classifier. The classifier is tuned using values between 1 and the square root of the number of observations in the training set (~119):
+```{r}
+library(pROC, warn.conflicts = FALSE)
+set.seed(1)
+
+t.grid <- expand.grid(k = c(1, 5, 11, 25, 51, 76, 101, 119))
+
+knn.model <- train(genre ~ ., data = music.train.num,
+             trControl = trainControl(method = "cv", number = 10),
+             tuneGrid = t.grid,
+             method = "knn")
+
+knn.model
+plot(knn.model)
+
+predictions <- predict(knn.model, music.test.num)
+c.matrix <- confusionMatrix(predictions, music.test.num$genre)
+
+c.matrix
+knn.accuracy <- c.matrix$overall[1]
+knn.auc <- multiclass.roc(as.numeric(music.test.num$genre), as.numeric(predictions))$auc[1]
+```
+&nbsp;
+
+#### Classification Using SVM
+##### Linear Kernel
+```{r}
+set.seed(1)
+
+t.grid <- expand.grid(C = c(.5, 1, 3, 5))
+
+
+svm.lin.model <- train(genre ~ ., data = music.train.num,
+             trControl = trainControl(method = "cv", number = 10),
+             tuneGrid = t.grid,
+             method = "svmLinear")
+
+svm.lin.model
+
+predictions <- predict(svm.lin.model, music.test.num)
+c.matrix <- confusionMatrix(predictions, music.test.num$genre)
+
+c.matrix
+svm.lin.accuracy <- c.matrix$overall[1]
+svm.lin.auc <- multiclass.roc(as.numeric(music.test.num$genre), as.numeric(predictions))$auc[1]
+```
+&nbsp;
+
+##### Radial Kernel
+```{r}
+set.seed(1)
+
+svm.rad.model <- train(genre ~ ., data = music.train.num,
+             trControl = trainControl(method = "cv", number = 10),
+             method = "svmRadial")
+
+svm.rad.model
+
+predictions <- predict(svm.rad.model, music.test.num)
+c.matrix <- confusionMatrix(predictions, music.test.num$genre)
+
+c.matrix
+svm.rad.accuracy <- c.matrix$overall[1]
+svm.rad.auc <- multiclass.roc(as.numeric(music.test.num$genre), as.numeric(predictions))$auc[1]
+```
+&nbsp;
+
+#### Classification Using Ensemble Learners
+##### Random Forest
+
+```{r}
+set.seed(1)
+
+t.grid <- expand.grid(mtry = c(1, 3, 6, 8, 11, 13))
+
+rf.model <- train(genre ~ ., data = music.train,
+                  trControl = trainControl(method = "cv", number = 10),
+                  tuneGrid = t.grid,
+                  method = "rf",
+                  importance = T)
+
+rf.model
+
+varImp(rf.model)
+
+predictions <- predict(rf.model, music.test)
+c.matrix <- confusionMatrix(predictions, music.test$genre)
+
+c.matrix
+rf.accuracy <- c.matrix$overall[1]
+rf.auc <- multiclass.roc(as.numeric(music.test$genre), as.numeric(predictions))$auc[1]
+```
+&nbsp;
+
+##### Gradient Boosted Trees
+```{r}
+set.seed(1)
+
+gbm.model <- train(genre ~ ., data = music.train,
+                  trControl = trainControl(method = "cv", number = 10),
+                  method = "gbm",
+                  verbose = FALSE)
+
+gbm.model
+
+predictions <- predict(gbm.model, music.test)
+c.matrix <- confusionMatrix(predictions, music.test$genre)
+
+c.matrix
+gbm.accuracy <- c.matrix$overall[1]
+gbm.auc <- multiclass.roc(as.numeric(music.test$genre), as.numeric(predictions))$auc[1]
+```
+&nbsp;
+
+#### Classification Using Neural Network
+More data preparation is necessary before training the neural network. A single validation set is created from the training data since Keras doesn't offer a convenient way to do cross-validation. The validation data will be used to tune the hyperparameters:
+```{r}
+set.seed(1)
+in.train <- createDataPartition(music.train.num$genre, p = 0.9, list = FALSE)
+
+music.train.nn <- as.data.frame(music.train.num[in.train, ])
+music.validation.nn <- as.data.frame(music.train.num[-in.train, ])
+```
+&nbsp;
+
+The training, validation, and test labels are separated from the data. Keras' to_categorical() function is used to one-hot encode the class labels:
+```{r}
+library(keras, warn.conflicts = FALSE)
+
+music.train.labels <- to_categorical(as.numeric(music.train.nn$genre))
+music.validation.labels <- to_categorical(as.numeric(music.validation.nn$genre))
+music.test.labels <- as.numeric(music.test.num$genre)
+
+#to_categorical adds a "0th" column that is removed:
+music.train.labels <- music.train.labels[ , -1]
+music.validation.labels <- music.validation.labels[ , -1]
+
+music.train.nn <- as.matrix(music.train.nn[-14])
+music.validation.nn <- as.matrix(music.validation.nn[-14])
+music.test.nn <- as.matrix(music.test.num[-14])
+```
+&nbsp;
+
+The initial neural network is fit here. The categorical_crossentropy loss function and softmax activation function are most suitable for multi-class classification problems:
+```{r}
+model <- keras_model_sequential() %>%
+  layer_dense(units = 9, activation = "softmax", input_shape = dim(music.train.nn)[2])
+
+model %>% compile(loss = "categorical_crossentropy", optimizer = "sgd", metrics = "accuracy")
+
+set.seed(1)
+
+history <- model %>% fit(music.train.nn, music.train.labels,
+                         batch_size = 64, epochs = 200,
+                         verbose = 0,
+                         validation_data = list(music.validation.nn, music.validation.labels))
+
+plot(history)
+```
+&nbsp;
+
+Let's try adding a hidden layer:
+```{r}
+model <- keras_model_sequential() %>%
+  layer_dense(units = 11, activation = "relu", input_shape = dim(music.train.nn)[2]) %>%
+  layer_dense(units = 9, activation = "softmax")
+
+model %>% compile(loss = "categorical_crossentropy", optimizer = "sgd", metrics = "accuracy")
+
+set.seed(1)
+
+history <- model %>% fit(music.train.nn, music.train.labels,
+                         batch_size = 64, epochs = 200,
+                         verbose = 0,
+                         validation_data = list(music.validation.nn, music.validation.labels))
+
+plot(history)
+```
+&nbsp;
+
+Adding a hidden layer increases the accuracy a bit. We'll keep the hidden layer and experiment with a few values for the number of neurons and the mini-batch size.  
+
+This model uses 11 neurons in the hidden layer and a mini-batch size of 32: 
+```{r}
+model <- keras_model_sequential() %>%
+  layer_dense(units = 11, activation = "relu", input_shape = dim(music.train.nn)[2]) %>%
+  layer_dense(units = 9, activation = "softmax")
+
+model %>% compile(loss = "categorical_crossentropy", optimizer = "sgd", metrics = "accuracy")
+
+set.seed(1)
+
+history <- model %>% fit(music.train.nn, music.train.labels,
+                         batch_size = 32, epochs = 200,
+                         verbose = 0,
+                         validation_data = list(music.validation.nn, music.validation.labels))
+
+plot(history)
+```
+&nbsp;
+
+This model uses 40 neurons and a mini-batch size of 64:
+```{r}
+model <- keras_model_sequential() %>%
+  layer_dense(units = 40, activation = "relu", input_shape = dim(music.train.nn)[2]) %>%
+  layer_dense(units = 9, activation = "softmax")
+
+model %>% compile(loss = "categorical_crossentropy", optimizer = "sgd", metrics = "accuracy")
+
+set.seed(1)
+
+history <- model %>% fit(music.train.nn, music.train.labels,
+                         batch_size = 64, epochs = 200,
+                         verbose = 0,
+                         validation_data = list(music.validation.nn, music.validation.labels))
+
+plot(history)
+```
+&nbsp;
+
+This model uses 40 neurons and a mini-batch size of 32:
+```{r}
+model <- keras_model_sequential() %>%
+  layer_dense(units = 40, activation = "relu", input_shape = dim(music.train.nn)[2]) %>%
+  layer_dense(units = 9, activation = "softmax")
+
+model %>% compile(loss = "categorical_crossentropy", optimizer = "sgd", metrics = "accuracy")
+
+set.seed(1)
+
+history <- model %>% fit(music.train.nn, music.train.labels,
+                         batch_size = 32, epochs = 200,
+                         verbose = 0,
+                         validation_data = list(music.validation.nn, music.validation.labels))
+
+plot(history)
+```
+&nbsp;
+
+We'll use the last model to classify the test data. The predict() function returns a matrix of probabilities where each column corresponds to a genre. The column with the highest probability is selected as the class:
+```{r}
+predictions <- model %>% predict(music.test.nn)
+predictions <- apply(predictions, 1, which.max)
+
+c.matrix <- confusionMatrix(as.factor(predictions), as.factor(music.test.labels))
+
+c.matrix
+nn.accuracy <- c.matrix$overall[1]
+nn.auc <- multiclass.roc(music.test.labels, predictions)$auc[1]
+```
+&nbsp;
+
+#### Results
+The accuracy and AUC of each classifier is shown below:
+```{r}
+performance <- matrix(c(knn.accuracy, knn.auc,
+                       svm.lin.accuracy, svm.lin.auc,
+                       svm.rad.accuracy, svm.rad.auc,
+                       rf.accuracy, rf.auc,
+                       gbm.accuracy, gbm.auc,
+                       nn.accuracy, nn.auc),
+                     ncol = 2, byrow = TRUE)
+colnames(performance) <- c("Accuracy", "AUC")
+rownames(performance) <- c("KNN", "SVM Linear", "SVM Radial", "Random Forest", "GBM", "Neural Network")
+as.table(performance)
+```
+&nbsp;
+
+The models' classification accuracy and AUC is not great, but acceptable considering the number of classes. GBM performed the best with a classification accuracy of ~49%. The random forest model performed nearly as well with accuracy of over 47% and AUC greater than GMB.
